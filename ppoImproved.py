@@ -7,6 +7,7 @@ import gymnasium
 from tqdm import tqdm
 from torch.distributions import MultivariateNormal
 import os
+import pandas as pd
 
 # torch.set_default_device("cuda")
 
@@ -28,12 +29,12 @@ class FeedForwardNN(nn.Module):
         self.l2b = nn.Linear(hidden_dim, hidden_dim)
         self.l3 = nn.Linear(hidden_dim, output_dim)
 
-        # torch.nn.init.orthogonal_(self.l1.weight, gain=1.0)
-        # torch.nn.init.orthogonal_(self.l2b.weight, gain=1.0)
-        # torch.nn.init.orthogonal_(self.l3.weight, gain=1.0)
-        # torch.nn.init.constant_(self.l1.bias, 0)
-        # torch.nn.init.constant_(self.l2b.bias, 0)
-        # torch.nn.init.constant_(self.l3.bias, 0)
+        torch.nn.init.orthogonal_(self.l1.weight, gain=1.0)
+        torch.nn.init.orthogonal_(self.l2b.weight, gain=1.0)
+        torch.nn.init.orthogonal_(self.l3.weight, gain=1.0)
+        torch.nn.init.constant_(self.l1.bias, 0)
+        torch.nn.init.constant_(self.l2b.bias, 0)
+        torch.nn.init.constant_(self.l3.bias, 0)
 
     def forward(self, observation):
         if isinstance(observation, np.ndarray):
@@ -75,17 +76,21 @@ class PPO:
 
 
     def _init_hyperparams(self):
-        self.timesteps_per_batch = 1024
+        self.timesteps_per_batch = 4096
         self.max_timesteps_per_episode = 512
         self.gamma = 0.99
         self.n_updates_per_iteration = 20
         self.clip = 0.1
         # self.lr = 2e-3
         # self.lr = 9e-4
-        self.lr = 2.5e-4
-        # self.lr = 2.5e-5
+        # self.lr = 2.5e-4 # seed 1
+        self.lr = 2.5e-5
         # self.lr = 5e-5
 
+        self.gae_lambda = 0.92
+        self.ent_coeff = 0.0004
+        # self.ent_coeff = 0.000
+        # self.ent_coeff = 0.01
         self.max_grad_norm = 0.8
         # self.timesteps_per_batch = 4800
         # self.max_timesteps_per_episode = 1600
@@ -108,21 +113,30 @@ class PPO:
                     batch_log_probs,
                     batch_rtgs,
                     batch_lens,
-                    batch_rewards
+                    batch_rewards,
+                    batch_dones,
+                    batch_vals
                 ) = self.rollout()
 
 
-                V, _ = self.evaluate(batch_obs, batch_acts)
 
                 # STEP 5
-                A_k = batch_rtgs - V.detach()
-                # Advantage normalisation
-                A_k = (A_k - A_k.mean()) / (A_k.std() + 1e-10)
+
+                if self.gae_lambda is None:
+                    V, _, _ = self.evaluate(batch_obs, batch_acts)
+                    A_k = batch_rtgs - V.detach()
+                    # Advantage normalisation
+                    A_k = (A_k - A_k.mean()) / (A_k.std() + 1e-10)
+                else:
+                    A_k = self.calculate_gae(batch_rewards, batch_vals, batch_dones) 
+                    V = self.critic(batch_obs).squeeze()
+                    batch_rtgs = A_k + V.detach()   
+                    A_k = (A_k - A_k.mean()) / (A_k.std() + 1e-10)
 
                 for _ in range(self.n_updates_per_iteration):
                     # Calculate pi_theta(a_t | s_t) (upper part of quotient)
                     # lower part is batch_log_probs
-                    _, curr_log_probs = self.evaluate(batch_obs, batch_acts)
+                    _, curr_log_probs, _ = self.evaluate(batch_obs, batch_acts)
 
                 # since they are both log we can take diff to get the ratio
                 ratios = torch.exp(curr_log_probs-batch_log_probs) #type: ignore
@@ -134,6 +148,11 @@ class PPO:
                 # mean loss of the actor
                 actor_loss = (-torch.min(surr1, surr2)).mean()
 
+                # entropy loss
+                V, curr_log_probs, entropy = self.evaluate(batch_obs, batch_acts)
+                entropy_loss = entropy.mean()
+                actor_loss = actor_loss - self.ent_coeff * entropy_loss
+
                 # Backpropagation
                 self.actor_optim.zero_grad()
                 actor_loss.backward(retain_graph=True)
@@ -143,7 +162,6 @@ class PPO:
 
                 # STEP 7: critic
                 # Calculate V_phi and pi_theta(a_t | s_t)    
-                V, curr_log_probs = self.evaluate(batch_obs, batch_acts)
                 critic_loss = nn.MSELoss()(V, batch_rtgs)
 
                 self.critic_optim.zero_grad()
@@ -158,7 +176,8 @@ class PPO:
                 progress_bar.update(timesteps_this_batch)
 
                 mean_rew = round(np.array(batch_rewards).sum(axis=1).mean(), 2)
-                progress_bar.set_description(f"batch rew: {mean_rew}")
+                progress_bar.set_description(f"batch rew: {self.plotRewards[-1]}")
+                # progress_bar.set_description(f"batch rew: {mean_rew}")
 
 
 
@@ -170,7 +189,7 @@ class PPO:
         dist = MultivariateNormal(mean, self.cov_mat)
         log_probs = dist.log_prob(batch_acts)
 
-        return V, log_probs
+        return V, log_probs, dist.entropy()
     
 
     def get_action(self, obs:torch.Tensor, deterministic=False):
@@ -214,35 +233,59 @@ class PPO:
         # batch_rewards_to_go = [] # [n_timesteps_p_batch]
         batch_lengths = []  # [n_episodes]
 
+        # for GAE
+        batch_vals = []
+        batch_dones = []
+
         t = 0
 
         while t < self.timesteps_per_batch:
             episode_rewards = []
+            ep_vals = []
+            ep_dones = []
             observations, _ = self.env.reset()
             done = False
 
-            for episode in range(self.max_timesteps_per_episode):
+            for episode_ts in range(self.max_timesteps_per_episode):
                 t += 1
 
                 # collect obs and step
                 batch_observations.append(observations)
                 action, log_prob = self.get_action(observations)  # type: ignore
+                val = self.critic(observations)
+
                 observations, reward, terminated, truncated, _ = self.env.step(action)  # type: ignore
                 done = terminated or truncated
 
                 # save rewards action and log_prob
                 episode_rewards.append(reward)
+                ep_vals.append(val.flatten())
+                ep_dones.append(done)
                 batch_actions.append(action)
                 batch_log_probabilities.append(log_prob)
 
                 if done:
                     break
 
-            batch_lengths.append(episode + 1)  # type: ignore
+            batch_lengths.append(episode_ts + 1)  # type: ignore
             # print(episode_rewards)
             batch_rewards.append(episode_rewards)
+            batch_vals.append(ep_vals)
+            batch_dones.append(ep_dones)
 
-            self.plotRewards.append(sum(episode_rewards))
+            # log for plot
+            obs_, _ = self.env.reset()
+            rew_ = 0
+            t_=0
+            done_ = False
+            while not done_ and t_ < 1000:
+                t+=1
+                action_, _ = self.get_action(obs_, deterministic=True)
+                obs_, reward_, terminated_, truncated_, _ = self.env.step(action_)  # type: ignore
+                done_ = terminated_ or truncated_
+                rew_ += reward_
+    
+            self.plotRewards.append(rew_)
             self.plotTimestep.append(self.timestepGlobal + t)
 
         # reshape to tensors
@@ -256,22 +299,36 @@ class PPO:
 
         batch_rewards_to_go = self.compute_rtgs(batch_rewards)
 
+
         return (
             batch_observations,
             batch_actions,
             batch_log_probabilities,
             batch_rewards_to_go,
             batch_lengths,
-            batch_rewards
+            batch_rewards,
+            batch_dones,
+            batch_vals
         )
 
 
     def save(self, path:str, name=None):
         print("Saving")
-        if not os.path.exists(path):
-            os.mkdir(path)
-        torch.save(self.actor.state_dict(), f'{path}/ppo_actor.pth')
-        torch.save(self.critic.state_dict(), f'{path}/ppo_critic.pth')
+
+        if name is None:
+            full = path
+            if not os.path.exists(path):
+                os.mkdir(path)
+        else:
+            full = path + "/" + name
+            if not os.path.exists(full):
+                os.mkdir(full)
+
+        torch.save(self.actor.state_dict(), f'{full}/ppo_actor.pth')
+        torch.save(self.critic.state_dict(), f'{full}/ppo_critic.pth')
+
+        csv = pd.DataFrame(np.array([self.plotTimestep, self.plotRewards]).T, columns=["timestep", "reward"])
+        csv.to_csv(f"{path}/{name}.csv")
 
     def load(self, path:str, name=None):
         self.actor.load_state_dict(torch.load(f'{path}/ppo_actor.pth'))
@@ -289,7 +346,7 @@ class PPO:
                 else:
                     delta = ep_rews[t] - ep_vals[t]
 
-                advantage = delta + self.gamma * self.lam * (1 - ep_dones[t]) * last_advantage
+                advantage = delta + self.gamma * self.gae_lambda * (1 - ep_dones[t]) * last_advantage
                 last_advantage = advantage
                 advantages.insert(0, advantage)
 
