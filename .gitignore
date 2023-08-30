@@ -1,3 +1,9 @@
 events.out*
 *.zip
 *.pyc
+__pychache__
+ppoo.py
+ppooo.py
+ppo4.py
+ppo5.py
+network.py
