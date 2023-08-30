@@ -7,7 +7,7 @@ import gymnasium
 from tqdm import tqdm
 from torch.distributions import MultivariateNormal
 import os
-
+import pandas as pd
 # torch.set_default_device("cuda")
 
 # TODO gsde
@@ -25,15 +25,15 @@ class FeedForwardNN(nn.Module):
 
         self.l1 = nn.Linear(input_dim, hidden_dim)
         # self.l2a = nn.Linear(hidden_dim, hidden_dim)
-        self.l2b = nn.Linear(hidden_dim, hidden_dim)
+        self.l2 = nn.Linear(hidden_dim, hidden_dim)
         self.l3 = nn.Linear(hidden_dim, output_dim)
 
         # torch.nn.init.orthogonal_(self.l1.weight, gain=1.0)
-        # torch.nn.init.orthogonal_(self.l2b.weight, gain=1.0)
+        # torch.nn.init.orthogonal_(self.l2.weight, gain=1.0)
         # torch.nn.init.orthogonal_(self.l3.weight, gain=1.0)
-        # torch.nn.init.constant_(self.l1.bias, 0)
-        # torch.nn.init.constant_(self.l2b.bias, 0)
-        # torch.nn.init.constant_(self.l3.bias, 0)
+        # torch.nn.init.normal_(self.l1.bias, mean=0, std= 1)
+        # torch.nn.init.normal_(self.l2.bias, mean=0, std= 1)
+        # torch.nn.init.normal_(self.l3.bias, mean=0, std= 1)
 
     def forward(self, observation):
         if isinstance(observation, np.ndarray):
@@ -41,7 +41,7 @@ class FeedForwardNN(nn.Module):
         # obs -> l1 -> relu1 -> l2 -> relu2 -> l3 -> out
         activation1 = F.relu(self.l1(observation))
         # activation2 = F.relu(self.l2a(activation1))
-        activation3 = F.relu(self.l2b(activation1))
+        activation3 = F.relu(self.l2(activation1))
         out = self.l3(activation3)
         return out
 
@@ -73,9 +73,12 @@ class PPO:
         self.plotRewards = []
         self.plotTimestep = []
 
+        self.record_every = int(512*8)
+        self.timestep_of_last_record = -(self.record_every+1)
+
 
     def _init_hyperparams(self):
-        self.timesteps_per_batch = 1024
+        self.timesteps_per_batch = int(8*1024)
         self.max_timesteps_per_episode = 512
         self.gamma = 0.99
         self.n_updates_per_iteration = 20
@@ -157,8 +160,9 @@ class PPO:
 
                 progress_bar.update(timesteps_this_batch)
 
-                mean_rew = round(np.array(batch_rewards).sum(axis=1).mean(), 2)
-                progress_bar.set_description(f"batch rew: {mean_rew}")
+                # mean_rew = round(np.array(batch_rewards).sum(axis=1).mean(), 2)
+                # progress_bar.set_description(f"batch rew: {mean_rew}")
+                progress_bar.set_description(f"rew: {round(self.plotRewards[-1], 3)} | act loss: {actor_loss}")
 
 
 
@@ -242,8 +246,24 @@ class PPO:
             # print(episode_rewards)
             batch_rewards.append(episode_rewards)
 
-            self.plotRewards.append(sum(episode_rewards))
+        
+        if (self.timestepGlobal + t) - self.timestep_of_last_record > self.record_every:
+            # log for plot
+            obs_, _ = self.env.reset()
+            rew_ = 0
+            t_=0
+            done_ = False
+            while not done_ and t_ < 1000:
+                t+=1
+                action_, _ = self.get_action(obs_, deterministic=True)
+                obs_, reward_, terminated_, truncated_, _ = self.env.step(action_)  # type: ignore
+                done_ = terminated_ or truncated_
+                rew_ += reward_
+
+            self.plotRewards.append(rew_)
             self.plotTimestep.append(self.timestepGlobal + t)
+
+            self.timestep_of_last_record = self.timestepGlobal + t
 
         # reshape to tensors
         batch_observations = torch.tensor(np.array(batch_observations), dtype=torch.float)
@@ -268,13 +288,32 @@ class PPO:
 
     def save(self, path:str, name=None):
         print("Saving")
-        if not os.path.exists(path):
-            os.mkdir(path)
-        torch.save(self.actor.state_dict(), f'{path}/ppo_actor.pth')
-        torch.save(self.critic.state_dict(), f'{path}/ppo_critic.pth')
+
+        if name is None:
+            full = path
+            if not os.path.exists(path):
+                os.mkdir(path)
+        else:
+            full = path + "/" + name
+            if not os.path.exists(full):
+                os.mkdir(full)
+
+        torch.save(self.actor.state_dict(), f'{full}/ppo_actor.pth')
+        torch.save(self.critic.state_dict(), f'{full}/ppo_critic.pth')
+
+        csv = pd.DataFrame(np.array([self.plotTimestep, self.plotRewards]).T, columns=["timestep", "reward"])
+        csv.to_csv(f"{path}/{name}.csv")
 
     def load(self, path:str, name=None):
-        self.actor.load_state_dict(torch.load(f'{path}/ppo_actor.pth'))
+        if name is None:
+            full = path
+            if not os.path.exists(path):
+                os.mkdir(path)
+        else:
+            full = path + "/" + name
+            if not os.path.exists(full):
+                os.mkdir(full)
+        self.actor.load_state_dict(torch.load(f'{full}/ppo_actor.pth'))
         # self.critic.load_state_dict(f'.{path}/ppo_critic.pth')
 
     def calculate_gae(self, rewards, values, dones):

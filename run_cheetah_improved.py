@@ -6,11 +6,11 @@ from ppo import PPO
 
 env = gym.make("HalfCheetah-v4")
 # from ppoImproved import PPO
-model = PPO(env, seed=511)
+model = PPO(env, seed=111)
 
 model.learn(1e6)
 
-model.save("PPOv1", "basicSeed522")
+model.save("PPOv2", "improvedSeed111")
 
 env = gym.make("HalfCheetah-v4", render_mode="human")
 env.reset()

@@ -29,21 +29,18 @@ class FeedForwardNN(nn.Module):
         self.l2b = nn.Linear(hidden_dim, hidden_dim)
         self.l3 = nn.Linear(hidden_dim, output_dim)
 
-        torch.nn.init.orthogonal_(self.l1.weight, gain=1.0)
-        torch.nn.init.orthogonal_(self.l2b.weight, gain=1.0)
-        torch.nn.init.orthogonal_(self.l3.weight, gain=1.0)
-        torch.nn.init.constant_(self.l1.bias, 0)
-        torch.nn.init.constant_(self.l2b.bias, 0)
-        torch.nn.init.constant_(self.l3.bias, 0)
+        # torch.nn.init.orthogonal_(self.l1.weight, gain=1.0)
+        # torch.nn.init.orthogonal_(self.l2b.weight, gain=1.0)
+        # torch.nn.init.orthogonal_(self.l3.weight, gain=1.0)
 
     def forward(self, observation):
         if isinstance(observation, np.ndarray):
             observation = torch.tensor(observation, dtype=torch.float)
         # obs -> l1 -> relu1 -> l2 -> relu2 -> l3 -> out
         activation1 = F.relu(self.l1(observation))
-        # activation2 = F.relu(self.l2a(activation1))
-        activation3 = F.relu(self.l2b(activation1))
-        out = self.l3(activation3)
+        activation2 = F.relu(self.l2b(activation1))
+        out = self.l3(activation2)
+        # out = torch.clamp(out, -1, 1)
         return out
 
 
@@ -74,17 +71,20 @@ class PPO:
         self.plotRewards = []
         self.plotTimestep = []
 
+        self.record_every = int(512*8)
+        self.timestep_of_last_record = -(self.record_every+1)
+
 
     def _init_hyperparams(self):
-        self.timesteps_per_batch = 4096
+        self.timesteps_per_batch = int(8 * 1024)
         self.max_timesteps_per_episode = 512
         self.gamma = 0.99
         self.n_updates_per_iteration = 20
         self.clip = 0.1
         # self.lr = 2e-3
         # self.lr = 9e-4
-        # self.lr = 2.5e-4 # seed 1
-        self.lr = 2.5e-5
+        self.lr = 2.5e-4 # seed 1
+        # self.lr = 9e-4
         # self.lr = 5e-5
 
         self.gae_lambda = 0.92
@@ -176,7 +176,7 @@ class PPO:
                 progress_bar.update(timesteps_this_batch)
 
                 mean_rew = round(np.array(batch_rewards).sum(axis=1).mean(), 2)
-                progress_bar.set_description(f"batch rew: {self.plotRewards[-1]}")
+                progress_bar.set_description(f"rew: {round(self.plotRewards[-1], 3)} | act loss: {actor_loss}")
                 # progress_bar.set_description(f"batch rew: {mean_rew}")
 
 
@@ -196,6 +196,7 @@ class PPO:
         # get a mean action
         # obs = torch.tensor(obs,dtype=torch.float)
         mean = self.actor(obs)
+        # mean = torch.max(mean, torch.ones(mean.shape))
 
         distribution = MultivariateNormal(mean, self.cov_mat)
 
@@ -273,6 +274,8 @@ class PPO:
             batch_vals.append(ep_vals)
             batch_dones.append(ep_dones)
 
+   
+        if (self.timestepGlobal + t) - self.timestep_of_last_record > self.record_every:
             # log for plot
             obs_, _ = self.env.reset()
             rew_ = 0
@@ -281,12 +284,14 @@ class PPO:
             while not done_ and t_ < 1000:
                 t+=1
                 action_, _ = self.get_action(obs_, deterministic=True)
-                obs_, reward_, terminated_, truncated_, _ = self.env.step(action_)  # type: ignore
+                with torch.no_grad():
+                    obs_, reward_, terminated_, truncated_, _ = self.env.step(action_)  # type: ignore
                 done_ = terminated_ or truncated_
                 rew_ += reward_
-    
+
             self.plotRewards.append(rew_)
             self.plotTimestep.append(self.timestepGlobal + t)
+
 
         # reshape to tensors
         batch_observations = torch.tensor(np.array(batch_observations), dtype=torch.float)
