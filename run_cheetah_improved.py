@@ -1,16 +1,16 @@
 import gymnasium as gym
 import torch
 import matplotlib.pyplot as plt
-from ppo import PPO
+from ppoImproved import PPO
 # from ppoo import PPO
 
 env = gym.make("HalfCheetah-v4")
 # from ppoImproved import PPO
-model = PPO(env, seed=111)
+model = PPO(env, seed=888)
 
 model.learn(1e6)
 
-model.save("PPOv2", "improvedSeed111")
+model.save("PPOv2", "improvedSeed888")
 
 env = gym.make("HalfCheetah-v4", render_mode="human")
 env.reset()
