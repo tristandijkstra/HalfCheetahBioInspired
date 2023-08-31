@@ -1,11 +1,27 @@
-# HalfCheetah
+# Half Cheetah - RL for legged robots
 AE4350 assignment - Half-Cheetah
 
+#### Installing dependencies
+The dependancies can be installed using conda /mamba using the following command.
 ```py
 conda env create -f environment.yml
 ```
+## Important files
 
-### Videos
+#### Models from Scratch
+- **Basic model**: ppo.py
+- **Improved model**: ppoImproved.py
+#### Run files
+- **Train basic model**: run_cheetah.py
+- **Train improved model**: run_cheetah_improved.py
+- **Train stable baselines3 model**: run_cheetah_sb3.py
+
+#### Final Model
+The final Stable Baselines model can be loading using: SB3/final.zip
+
+#### Other files
+Plotting files are prefaced with "plot". Videos are made using record files. 
+## Videos
 #### Doing Nothing
 
 
