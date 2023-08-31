@@ -336,7 +336,15 @@ class PPO:
         csv.to_csv(f"{path}/{name}.csv")
 
     def load(self, path:str, name=None):
-        self.actor.load_state_dict(torch.load(f'{path}/ppo_actor.pth'))
+        if name is None:
+            full = path
+            if not os.path.exists(path):
+                os.mkdir(path)
+        else:
+            full = path + "/" + name
+            if not os.path.exists(full):
+                os.mkdir(full)
+        self.actor.load_state_dict(torch.load(f'{full}/ppo_actor.pth'))
         # self.critic.load_state_dict(f'.{path}/ppo_critic.pth')
 
     def calculate_gae(self, rewards, values, dones):
