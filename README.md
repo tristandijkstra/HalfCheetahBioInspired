@@ -1,8 +1,12 @@
 # Half Cheetah - RL for legged robots
-AE4350 assignment - Half-Cheetah
+In this repository, I control the Half Cheetah Reinforcement Learning benchmark with various PPO models.
+
+This project was done as an assignment for the AE4350 Bio-Inspired Learning course at TU Delft.
+
+The final model has a reward score of 3387.
 
 #### Installing dependencies
-The dependancies can be installed using conda /mamba using the following command.
+The dependencies can be installed using conda /mamba using the following command.
 ```py
 conda env create -f environment.yml
 ```
